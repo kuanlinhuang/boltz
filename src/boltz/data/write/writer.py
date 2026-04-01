@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Literal
@@ -49,6 +50,19 @@ class BoltzWriter(BasePredictionWriter):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.write_embeddings = write_embeddings
         self._savez = np.savez_compressed if compress_output else np.savez
+        self._executor = ThreadPoolExecutor(max_workers=4)
+        self._futures = []
+
+    def _submit_write(self, fn, *args, **kwargs):
+        """Submit a write operation to the background thread pool."""
+        future = self._executor.submit(fn, *args, **kwargs)
+        self._futures.append(future)
+
+    def _flush_writes(self):
+        """Wait for all pending writes to complete and raise any errors."""
+        for future in self._futures:
+            future.result()  # raises if the write failed
+        self._futures.clear()
 
     def write_on_batch_end(
         self,
@@ -162,26 +176,28 @@ class BoltzWriter(BasePredictionWriter):
                 # Create path name
                 outname = f"{record.id}_model_{idx_to_rank[model_idx]}"
 
-                # Save the structure
+                # Save the structure (prepare content, then write async)
                 if self.output_format == "pdb":
+                    content = to_pdb(
+                        new_structure, plddts=plddts, boltz2=self.boltz2
+                    )
                     path = struct_dir / f"{outname}.pdb"
-                    with path.open("w") as f:
-                        f.write(
-                            to_pdb(new_structure, plddts=plddts, boltz2=self.boltz2)
-                        )
+                    self._submit_write(path.write_text, content)
                 elif self.output_format == "mmcif":
+                    content = to_mmcif(
+                        new_structure, plddts=plddts, boltz2=self.boltz2
+                    )
                     path = struct_dir / f"{outname}.cif"
-                    with path.open("w") as f:
-                        f.write(
-                            to_mmcif(new_structure, plddts=plddts, boltz2=self.boltz2)
-                        )
+                    self._submit_write(path.write_text, content)
                 else:
                     path = struct_dir / f"{outname}.npz"
-                    self._savez(path, **asdict(new_structure))
+                    struct_data = asdict(new_structure)
+                    self._submit_write(self._savez, path, **struct_data)
 
                 if self.boltz2 and record.affinity and idx_to_rank[model_idx] == 0:
                     path = struct_dir / f"pre_affinity_{record.id}.npz"
-                    self._savez(path, **asdict(new_structure))
+                    struct_data = asdict(new_structure)
+                    self._submit_write(self._savez, path, **struct_data)
                     np.array(atoms["coords"][:, None], dtype=Coords)
 
                 # Save confidence summary
@@ -216,58 +232,54 @@ class BoltzWriter(BasePredictionWriter):
                         }
                         for idx1 in prediction["pair_chains_iptm"]
                     }
-                    with path.open("w") as f:
-                        f.write(
-                            json.dumps(
-                                confidence_summary_dict,
-                                indent=4,
-                            )
-                        )
+                    json_str = json.dumps(confidence_summary_dict, indent=4)
+                    self._submit_write(path.write_text, json_str)
 
                     # Save plddt
-                    plddt = prediction["plddt"][model_idx]
+                    plddt_np = prediction["plddt"][model_idx].cpu().numpy()
                     path = (
                         struct_dir
                         / f"plddt_{record.id}_model_{idx_to_rank[model_idx]}.npz"
                     )
-                    self._savez(path, plddt=plddt.cpu().numpy())
+                    self._submit_write(self._savez, path, plddt=plddt_np)
 
                 # Save pae
                 if "pae" in prediction:
-                    pae = prediction["pae"][model_idx]
+                    pae_np = prediction["pae"][model_idx].cpu().numpy()
                     path = (
                         struct_dir
                         / f"pae_{record.id}_model_{idx_to_rank[model_idx]}.npz"
                     )
-                    self._savez(path, pae=pae.cpu().numpy())
+                    self._submit_write(self._savez, path, pae=pae_np)
 
                 # Save pde
                 if "pde" in prediction:
-                    pde = prediction["pde"][model_idx]
+                    pde_np = prediction["pde"][model_idx].cpu().numpy()
                     path = (
                         struct_dir
                         / f"pde_{record.id}_model_{idx_to_rank[model_idx]}.npz"
                     )
-                    self._savez(path, pde=pde.cpu().numpy())
-                
+                    self._submit_write(self._savez, path, pde=pde_np)
+
             # Save embeddings
             if self.write_embeddings and "s" in prediction and "z" in prediction:
-                s = prediction["s"].cpu().numpy()
-                z = prediction["z"].cpu().numpy()
+                s_np = prediction["s"].cpu().numpy()
+                z_np = prediction["z"].cpu().numpy()
 
                 path = (
                     struct_dir
                     / f"embeddings_{record.id}.npz"
                 )
-                self._savez(path, s=s, z=z)
+                self._submit_write(self._savez, path, s=s_np, z=z_np)
 
     def on_predict_epoch_end(
         self,
         trainer: Trainer,  # noqa: ARG002
         pl_module: LightningModule,  # noqa: ARG002
     ) -> None:
-        """Print the number of failed examples."""
-        # Print number of failed examples
+        """Flush pending writes and print the number of failed examples."""
+        self._flush_writes()
+        self._executor.shutdown(wait=True)
         print(f"Number of failed examples: {self.failed}")  # noqa: T201
 
 
