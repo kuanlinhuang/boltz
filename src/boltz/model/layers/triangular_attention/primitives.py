@@ -24,7 +24,6 @@ from torch import nn
 from boltz.model.layers import initialize
 from boltz.model.layers.triangular_attention.utils import (
     flatten_final_dims,
-    permute_final_dims,
 )
 
 
@@ -155,22 +154,6 @@ class LayerNorm(nn.Module):
             )
 
         return out
-
-
-@torch.jit.ignore
-def softmax_no_cast(t: torch.Tensor, dim: int = -1) -> torch.Tensor:
-    """
-    Softmax, but without automatic casting to fp32 when the input is of
-    type bfloat16
-    """
-    d = t.dtype
-    if d is torch.bfloat16:
-        with torch.autocast("cuda", enabled=False):
-            s = torch.nn.functional.softmax(t, dim=dim)
-    else:
-        s = torch.nn.functional.softmax(t, dim=dim)
-
-    return s
 
 
 # @torch.jit.script
