@@ -340,23 +340,6 @@ class AtomDiffusion(Module):
         else:
             step_scale = self.step_scale
 
-        # Pre-cast diffusion_conditioning values to float once (avoids
-        # redundant .float() casts on every sampling step)
-        if "diffusion_conditioning" in network_condition_kwargs:
-            dc = network_condition_kwargs["diffusion_conditioning"]
-            dc_float = {
-                "q": dc["q"].float(),
-                "c": dc["c"].float(),
-                "atom_enc_bias": dc["atom_enc_bias"].float(),
-                "atom_dec_bias": dc["atom_dec_bias"].float(),
-                "token_trans_bias": dc["token_trans_bias"].float(),
-                "to_keys": dc["to_keys"],
-            }
-            network_condition_kwargs = {
-                **network_condition_kwargs,
-                "diffusion_conditioning": dc_float,
-            }
-
         # atom position is noise at the beginning
         init_sigma = sigmas[0]
         atom_coords = init_sigma * torch.randn(shape, device=self.device)

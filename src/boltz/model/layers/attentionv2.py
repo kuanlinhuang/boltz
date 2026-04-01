@@ -97,22 +97,24 @@ class AttentionPairBias(nn.Module):
 
         g = self.proj_g(s).sigmoid()
 
-        # Transpose to (B, H, S, D) for scaled_dot_product_attention
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
-
-        # Combine pair bias and padding mask into attention bias (keep in float
-        # to avoid overflow with large inf values in lower precision)
-        attn_bias = bias.float() + (1 - mask[:, None, None].float()) * -self.inf
-
-        # SDPA handles precision internally (upcasts softmax when needed)
-        o = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_bias,
-        )
-
-        # Transpose back to (B, S, H, D)
-        o = o.transpose(1, 2)
+        with torch.autocast("cuda", enabled=False):
+            if q.is_cuda:
+                # Use fused SDPA on CUDA (enables FlashAttention / memory-efficient attention)
+                q_t = q.transpose(1, 2).float()
+                k_t = k.transpose(1, 2).float()
+                v_t = v.transpose(1, 2).float()
+                attn_bias = bias.float() + (1 - mask[:, None, None].float()) * -self.inf
+                o = F.scaled_dot_product_attention(
+                    q_t, k_t, v_t, attn_mask=attn_bias,
+                ).to(v.dtype)
+                o = o.transpose(1, 2)
+            else:
+                # Use einsum on CPU/MPS for bit-exact reproducibility
+                attn = torch.einsum("bihd,bjhd->bhij", q.float(), k.float())
+                attn = attn / (self.head_dim**0.5) + bias.float()
+                attn = attn + (1 - mask[:, None, None].float()) * -self.inf
+                attn = attn.softmax(dim=-1)
+                o = torch.einsum("bhij,bjhd->bihd", attn, v.float()).to(v.dtype)
         o = o.reshape(B, -1, self.c_s)
         o = self.proj_o(g * o)
 
