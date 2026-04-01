@@ -24,6 +24,7 @@ class BoltzWriter(BasePredictionWriter):
         output_format: Literal["pdb", "mmcif"] = "mmcif",
         boltz2: bool = False,
         write_embeddings: bool = False,
+        compress_output: bool = True,
     ) -> None:
         """Initialize the writer.
 
@@ -31,6 +32,8 @@ class BoltzWriter(BasePredictionWriter):
         ----------
         output_dir : str
             The directory to save the predictions.
+        compress_output : bool
+            Whether to compress npz output files, by default True.
 
         """
         super().__init__(write_interval="batch")
@@ -45,6 +48,7 @@ class BoltzWriter(BasePredictionWriter):
         self.boltz2 = boltz2
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.write_embeddings = write_embeddings
+        self._savez = np.savez_compressed if compress_output else np.savez
 
     def write_on_batch_end(
         self,
@@ -173,11 +177,11 @@ class BoltzWriter(BasePredictionWriter):
                         )
                 else:
                     path = struct_dir / f"{outname}.npz"
-                    np.savez_compressed(path, **asdict(new_structure))
+                    self._savez(path, **asdict(new_structure))
 
                 if self.boltz2 and record.affinity and idx_to_rank[model_idx] == 0:
                     path = struct_dir / f"pre_affinity_{record.id}.npz"
-                    np.savez_compressed(path, **asdict(new_structure))
+                    self._savez(path, **asdict(new_structure))
                     np.array(atoms["coords"][:, None], dtype=Coords)
 
                 # Save confidence summary
@@ -226,7 +230,7 @@ class BoltzWriter(BasePredictionWriter):
                         struct_dir
                         / f"plddt_{record.id}_model_{idx_to_rank[model_idx]}.npz"
                     )
-                    np.savez_compressed(path, plddt=plddt.cpu().numpy())
+                    self._savez(path, plddt=plddt.cpu().numpy())
 
                 # Save pae
                 if "pae" in prediction:
@@ -235,7 +239,7 @@ class BoltzWriter(BasePredictionWriter):
                         struct_dir
                         / f"pae_{record.id}_model_{idx_to_rank[model_idx]}.npz"
                     )
-                    np.savez_compressed(path, pae=pae.cpu().numpy())
+                    self._savez(path, pae=pae.cpu().numpy())
 
                 # Save pde
                 if "pde" in prediction:
@@ -244,7 +248,7 @@ class BoltzWriter(BasePredictionWriter):
                         struct_dir
                         / f"pde_{record.id}_model_{idx_to_rank[model_idx]}.npz"
                     )
-                    np.savez_compressed(path, pde=pde.cpu().numpy())
+                    self._savez(path, pde=pde.cpu().numpy())
                 
             # Save embeddings
             if self.write_embeddings and "s" in prediction and "z" in prediction:
@@ -255,7 +259,7 @@ class BoltzWriter(BasePredictionWriter):
                     struct_dir
                     / f"embeddings_{record.id}.npz"
                 )
-                np.savez_compressed(path, s=s, z=z)
+                self._savez(path, s=s, z=z)
 
     def on_predict_epoch_end(
         self,
