@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 from torch import Tensor, nn
 
@@ -116,16 +117,22 @@ class AttentionPairBias(nn.Module):
 
         g = self.proj_g(s).sigmoid()
 
-        with torch.autocast("cuda", enabled=False):
-            # Compute attention weights
-            attn = torch.einsum("bihd,bjhd->bhij", q.float(), k.float())
-            attn = attn / (self.head_dim**0.5) + z.float()
-            # The pairwise mask tensor (B, N) is broadcasted to (B, 1, 1, N) and (B, H, N, N)
-            attn = attn + (1 - mask[:, None, None].float()) * -self.inf
-            attn = attn.softmax(dim=-1)
+        # Transpose to (B, H, S, D) for scaled_dot_product_attention
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
-            # Compute output
-            o = torch.einsum("bhij,bjhd->bihd", attn, v.float()).to(v.dtype)
+        # Combine pair bias and padding mask into attention bias
+        attn_bias = z + (1 - mask[:, None, None].float()) * -self.inf
+
+        with torch.autocast("cuda", enabled=False):
+            o = F.scaled_dot_product_attention(
+                q.float(), k.float(), v.float(),
+                attn_mask=attn_bias.float(),
+            ).to(v.dtype)
+
+        # Transpose back to (B, S, H, D)
+        o = o.transpose(1, 2)
         o = o.reshape(B, -1, self.c_s)
         o = self.proj_o(g * o)
 
