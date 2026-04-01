@@ -17,6 +17,7 @@ import math
 from typing import Callable, List, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
 
@@ -179,21 +180,16 @@ def _attention(
     value: torch.Tensor,
     biases: List[torch.Tensor],
 ) -> torch.Tensor:
-    # [*, H, C_hidden, K]
-    key = permute_final_dims(key, (1, 0))
+    # Combine all biases into a single attention mask
+    attn_mask = biases[0]
+    for b in biases[1:]:
+        attn_mask = attn_mask + b
 
-    # [*, H, Q, K]
-    a = torch.matmul(query, key)
-
-    for b in biases:
-        a += b
-
-    a = softmax_no_cast(a, -1)
-
-    # [*, H, Q, C_hidden]
-    a = torch.matmul(a, value)
-
-    return a
+    # query is pre-scaled by 1/sqrt(d), so use scale=1.0
+    # Input shapes: [*, H, Q, D] for query/key/value, [*, H, Q, K] for attn_mask
+    return F.scaled_dot_product_attention(
+        query, key, value, attn_mask=attn_mask, scale=1.0,
+    )
 
 
 @torch.compiler.disable
