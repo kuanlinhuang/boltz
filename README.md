@@ -35,7 +35,7 @@ git clone https://github.com/jwohlwend/boltz.git
 cd boltz; pip install -e .[cuda]
 ```
 
-If you are installing on CPU-only or non-CUDA GPus hardware, remove `[cuda]` from the above commands. Note that the CPU version is significantly slower than the GPU version.
+If you are installing on CPU-only or non-CUDA GPUs hardware, remove `[cuda]` from the above commands. Note that the CPU version is significantly slower than the GPU version.
 
 ## Inference
 
@@ -46,6 +46,12 @@ boltz predict input_path --use_msa_server
 ```
 
 `input_path` should point to a YAML file, or a directory of YAML files for batched processing, describing the biomolecules you want to model and the properties you want to predict (e.g. affinity). To see all available options: `boltz predict --help` and for more information on these input formats, see our [prediction instructions](docs/prediction.md). By default, the `boltz` command will run the latest version of the model.
+
+### Performance Tips
+
+- **CUDA (A100/H100):** Attention layers automatically use `scaled_dot_product_attention` for fused FlashAttention-2 kernels.
+- **Faster output writes:** Pass `--no_compress` to skip zlib compression on output `.npz` files (9-47x faster writes, ~10% larger files).
+- **Multi-chain MSA:** Paired and unpaired MSA server searches now run concurrently, halving MSA generation time for multi-chain complexes.
 
 
 ### Binding Affinity Prediction
