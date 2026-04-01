@@ -122,14 +122,14 @@ class AttentionPairBias(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        # Combine pair bias and padding mask into attention bias
-        attn_bias = z + (1 - mask[:, None, None].float()) * -self.inf
+        # Combine pair bias and padding mask into attention bias (keep in float
+        # to avoid overflow with large inf values in lower precision)
+        attn_bias = z.float() + (1 - mask[:, None, None].float()) * -self.inf
 
-        with torch.autocast("cuda", enabled=False):
-            o = F.scaled_dot_product_attention(
-                q.float(), k.float(), v.float(),
-                attn_mask=attn_bias.float(),
-            ).to(v.dtype)
+        # SDPA handles precision internally (upcasts softmax when needed)
+        o = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=attn_bias,
+        )
 
         # Transpose back to (B, S, H, D)
         o = o.transpose(1, 2)
